@@ -1,0 +1,32 @@
+# --- Vivado Temporary & Log Files ---
+*.log
+*.jou
+*.str
+*.os
+*.tmp
+*.pb
+vivado_pid*.str
+hs_err_pid*.log
+
+# --- Vivado Auto-Generated Project Directories ---
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+
+# --- Compilation & Output Artifacts ---
+*.bit
+*.bin
+*.mcs
+*.svf
+*.dcp
+*.edf
+
+# Verilator
+obj_dir/*
+!.gitkeep
+
+# Project file (use create-project.tcl in scripts)
+*.xpr
