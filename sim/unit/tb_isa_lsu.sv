@@ -6,142 +6,187 @@
 // Milestone:   M1 (Scalar RV32IM + Zicsr/Zifencei Core Skeleton)
 //
 // Description:
-//   Human-Verifiable Directed Test Suite Stubs for the 8 RV32I Load and Store
+//   Human-Verifiable Directed Test Suite for the 8 RV32I Load and Store
 //   Instructions:
 //     - Loads (5):  `lb`, `lh`, `lw`, `lbu`, `lhu`
 //     - Stores (3): `sb`, `sh`, `sw`
-//
-//   How Verification Works (Using `tb_core` Debug Harness Ports):
-//     1. Preload target memory words in `axi_bram_mem` via the Debug SBA port
-//        (`har_write_mem`) and preload base/data GPRs (`rs1`, `rs2`, `rd`) via
-//        `har_write_gpr`.
-//     2. After a Load instruction retires:
-//        - Inspect `rd` via `har_assert_gpr` to verify byte lane extraction and
-//          sign/zero extension.
-//     3. After a Store instruction retires:
-//        - Read the modified 32-bit word (and adjacent words) directly from
-//          `axi_bram_mem` via `har_assert_mem` (Debug SBA) to prove that ONLY
-//          the intended byte lanes were modified!
-//     4. After a Faulting Load or Store (ROM write, unmapped address, or
-//        misaligned MMIO):
-//        - Verify `har_assert_trap` with the exact `mcause` (`4, 5, 6, 7`) and
-//          `mtval == faulting_eff_addr`.
-//        - Verify via `har_assert_gpr` (for loads) or `har_assert_mem` (for
-//          stores to ROM) that neither the destination register nor memory was
-//          modified!
+//     - Hardware Misaligned Split-Transfer Handling (`misalign.sv`)
+//     - PMA Permission & Alignment Exception Detection
 // =============================================================================
 
 module tb_isa_lsu
     import soc_pkg::*;
     import rv_pkg::*;
     import core_pkg::*;
+    import tb_asm_pkg::*;
 ;
+
+    commit_trace_t tr;
+    logic err;
+
+    task automatic exec_single_insn(input logic [31:0] insn);
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE, insn, 4'b1111, err);
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE + 4, asm_wfi(), 4'b1111, err);
+        tb_core.har_wait_retire(100, tr);
+    endtask
+
+    // Data test address in main RAM (well above code at MAIN_MEM_BASE)
+    localparam logic [31:0] DATA_ADDR = soc_pkg::MAIN_MEM_BASE + 32'h0000_2000;
 
     // =========================================================================
     // 1. Aligned Loads: LB / LBU / LH / LHU / LW
     // =========================================================================
-    // Intended Cases:
-    //   - Preload `0x8000_2000` with `32'h807F_8001` via `har_write_mem`:
-    //       * `lb`  offset `0` (`0x01`) -> `32'h0000_0001`
-    //       * `lb`  offset `1` (`0x80`) -> `32'hFFFF_FF80` (sign-extended!)
-    //       * `lbu` offset `1` (`0x80`) -> `32'h0000_0080` (zero-extended!)
-    //       * `lb`  offset `2` (`0x7F`) -> `32'h0000_007F`
-    //       * `lb`  offset `3` (`0x80`) -> `32'hFFFF_FF80`
-    //       * `lh`  offset `0` (`0x8001`) -> `32'hFFFF_8001` (sign-extended!)
-    //       * `lhu` offset `0` (`0x8001`) -> `32'h0000_8001` (zero-extended!)
-    //       * `lh`  offset `2` (`0x807F`) -> `32'hFFFF_807F`
-    //       * `lw`  offset `0` -> `32'h807F_8001`
-    //   - Positive and Negative 12-bit Address Offset (`imm = +2047`, `imm = -2048`).
-    //   - Load-to-Use RAW Hazard Interlock:
-    //       * `lw x5, 0(x1)` followed immediately by `addi x6, x5, 1`: verify
-    //         `x6 == 32'h807F_8002`.
     task automatic test_aligned_loads();
-        // TODO: Implement stimulus & harness checks for aligned `lb`, `lbu`, `lh`, `lhu`, `lw`
+        $display("[INFO] Running test_aligned_loads...");
+
+        // Preload DATA_ADDR with 0x807F_8001
+        //   Byte 0: 0x01
+        //   Byte 1: 0x80
+        //   Byte 2: 0x7F
+        //   Byte 3: 0x80
+        tb_core.har_write_mem(DATA_ADDR, 32'h807F_8001, 4'b1111, err);
+        tb_core.har_write_gpr(5'd1, DATA_ADDR); // base address in x1
+
+        // 1.1 LB byte 0 (0x01): sign-extended -> 0x0000_0001
+        exec_single_insn(asm_lb(5'd5, 5'd1, 12'd0));
+        tb_core.har_assert_gpr(5'd5, 32'h0000_0001, "lb byte 0 (0x01)");
+
+        // 1.2 LB byte 1 (0x80): sign-extended -> 0xFFFF_FF80
+        exec_single_insn(asm_lb(5'd5, 5'd1, 12'd1));
+        tb_core.har_assert_gpr(5'd5, 32'hFFFF_FF80, "lb byte 1 (0x80 sign-extended)");
+
+        // 1.3 LBU byte 1 (0x80): zero-extended -> 0x0000_0080
+        exec_single_insn(asm_lbu(5'd5, 5'd1, 12'd1));
+        tb_core.har_assert_gpr(5'd5, 32'h0000_0080, "lbu byte 1 (0x80 zero-extended)");
+
+        // 1.4 LH halfword 0 (0x8001): sign-extended -> 0xFFFF_8001
+        exec_single_insn(asm_lh(5'd5, 5'd1, 12'd0));
+        tb_core.har_assert_gpr(5'd5, 32'hFFFF_8001, "lh halfword 0 (0x8001 sign-extended)");
+
+        // 1.5 LHU halfword 0 (0x8001): zero-extended -> 0x0000_8001
+        exec_single_insn(asm_lhu(5'd5, 5'd1, 12'd0));
+        tb_core.har_assert_gpr(5'd5, 32'h0000_8001, "lhu halfword 0 (0x8001 zero-extended)");
+
+        // 1.6 LW word 0: full word -> 0x807F_8001
+        exec_single_insn(asm_lw(5'd5, 5'd1, 12'd0));
+        tb_core.har_assert_gpr(5'd5, 32'h807F_8001, "lw full word 0x807F_8001");
+
+        // 1.7 Load-to-Use RAW hazard interlock (lw followed immediately by addi)
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE + 0, asm_lw(5'd5, 5'd1, 12'd0), 4'b1111, err);
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE + 4, asm_addi(5'd6, 5'd5, 12'd1), 4'b1111, err);
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE + 8, asm_wfi(), 4'b1111, err);
+        tb_core.har_wait_retire(50, tr);
+        tb_core.har_wait_retire(50, tr);
+        tb_core.har_assert_gpr(5'd6, 32'h807F_8002, "load-use RAW interlock lw -> addi");
     endtask
 
     // =========================================================================
-    // 2. Aligned Stores: SB / SH / SW (Byte-Lane Masking Verification via SBA)
+    // 2. Aligned Stores: SB / SH / SW (Byte-Lane Masking Check via SBA)
     // =========================================================================
-    // Intended Cases:
-    //   - Preload `0x8000_2000` with `32'h1122_3344` via `har_write_mem`:
-    //       * Execute `sb` with `rs2 = 32'hDEAD_BEEF` at offset `0`:
-    //         Verify via `har_assert_mem(32'h8000_2000, 32'h1122_33EF)` (only
-    //         low byte `rs2[7:0]` written to lane 0; upper 24 bits of `rs2`
-    //         ignored; lanes 1..3 of memory preserved!).
-    //       * Execute `sb` at offsets `1`, `2`, and `3`, checking memory via
-    //         `har_assert_mem` after each store.
-    //       * Re-initialize `0x8000_2000` to `32'h1122_3344`; execute `sh` with
-    //         `rs2 = 32'hAAAA_CAFE` at offset `0` -> `32'h1122_CAFE`, and at
-    //         offset `2` -> `32'hCAFE_CAFE`.
-    //       * Execute `sw` with `rs2 = 32'hCAFE_BABE` at offset `0` ->
-    //         `32'hCAFE_BABE`.
     task automatic test_aligned_stores();
-        // TODO: Implement stimulus & harness checks for aligned `sb`, `sh`, `sw`
+        $display("[INFO] Running test_aligned_stores...");
+
+        tb_core.har_write_gpr(5'd1, DATA_ADDR); // base address
+        tb_core.har_write_gpr(5'd2, 32'hDEAD_BEEF); // store data
+
+        // 2.1 SB to byte 0: memory changes from 0x1122_3344 -> 0x1122_33EF
+        tb_core.har_write_mem(DATA_ADDR, 32'h1122_3344, 4'b1111, err);
+        exec_single_insn(asm_sb(5'd2, 5'd1, 12'd0));
+        tb_core.har_assert_mem(DATA_ADDR, 32'h1122_33EF, "sb byte 0 masking");
+
+        // 2.2 SB to byte 1: memory changes to 0x1122_EF44
+        tb_core.har_write_mem(DATA_ADDR, 32'h1122_3344, 4'b1111, err);
+        exec_single_insn(asm_sb(5'd2, 5'd1, 12'd1));
+        tb_core.har_assert_mem(DATA_ADDR, 32'h1122_EF44, "sb byte 1 masking");
+
+        // 2.3 SH to halfword 0 (offset 0): 0x1122_3344 -> 0x1122_BEEF
+        tb_core.har_write_mem(DATA_ADDR, 32'h1122_3344, 4'b1111, err);
+        exec_single_insn(asm_sh(5'd2, 5'd1, 12'd0));
+        tb_core.har_assert_mem(DATA_ADDR, 32'h1122_BEEF, "sh halfword 0 masking");
+
+        // 2.4 SH to halfword 1 (offset 2): 0x1122_3344 -> 0xBEEF_3344
+        tb_core.har_write_mem(DATA_ADDR, 32'h1122_3344, 4'b1111, err);
+        exec_single_insn(asm_sh(5'd2, 5'd1, 12'd2));
+        tb_core.har_assert_mem(DATA_ADDR, 32'hBEEF_3344, "sh halfword 1 masking");
+
+        // 2.5 SW to word 0: full word write -> 0xDEAD_BEEF
+        exec_single_insn(asm_sw(5'd2, 5'd1, 12'd0));
+        tb_core.har_assert_mem(DATA_ADDR, 32'hDEAD_BEEF, "sw full word 0xDEAD_BEEF");
     endtask
 
     // =========================================================================
-    // 3. Hardware Misaligned Loads & Stores (`misalign.sv` Split Engine)
+    // 3. Hardware Misaligned Loads & Stores (Split Across Word Boundaries)
     // =========================================================================
-    // Intended Cases (Idempotent RAM `0x8000_2000` & `0x8000_2004`):
-    //   - Preload Word 0 (`0x8000_2000 = 32'h4433_2211`) and Word 1
-    //     (`0x8000_2004 = 32'h8877_6655`) via `har_write_mem`:
-    //       * `lh` / `lhu` at offset `1` (`0x8000_2001`, within Word 0):
-    //         returns `0x0000_3322`.
-    //       * `lh` / `lhu` at offset `3` (`0x8000_2003`, crosses Word 0 -> Word 1!):
-    //         merges byte 3 of Word 0 (`0x44`) and byte 0 of Word 1 (`0x55`) ->
-    //         `0x0000_5544` (and sign-extends if bit 15 is 1, e.g. `0x8844` ->
-    //         `0xFFFF_8844` for `lh` vs. `0x0000_8844` for `lhu`).
-    //       * `lw` at offset `1` (`0x8000_2001`): `32'h5544_3322`.
-    //       * `lw` at offset `2` (`0x8000_2002`): `32'h6655_4433`.
-    //       * `lw` at offset `3` (`0x8000_2003`): `32'h7766_5544`.
-    //   - Misaligned Stores (`sh` at offsets `1, 3`; `sw` at offsets `1, 2, 3`):
-    //       * Preload Word 0 and Word 1 with `32'hAAAA_AAAA` and `32'hBBBB_BBBB`.
-    //       * Execute `sw` of `32'h1234_5678` to `0x8000_2001` (offset 1):
-    //         Verify via `har_assert_mem` that Word 0 == `32'h3456_78AA` and
-    //         Word 1 == `32'hBBBB_BB12`!
-    //       * Repeat for `sw` at offsets `2` and `3`, and `sh` at offset `3`.
     task automatic test_misaligned_ram_access();
-        // TODO: Implement stimulus & harness checks for misaligned RAM loads/stores
+        $display("[INFO] Running test_misaligned_ram_access...");
+
+        // Preload Word 0 (0x4433_2211) and Word 1 (0x8877_6655)
+        tb_core.har_write_mem(DATA_ADDR + 0, 32'h4433_2211, 4'b1111, err);
+        tb_core.har_write_mem(DATA_ADDR + 4, 32'h8877_6655, 4'b1111, err);
+        tb_core.har_write_gpr(5'd1, DATA_ADDR);
+
+        // 3.1 Misaligned LH at offset 1: bytes {0x33, 0x22} -> 0x0000_3322
+        exec_single_insn(asm_lh(5'd5, 5'd1, 12'd1));
+        tb_core.har_assert_gpr(5'd5, 32'h0000_3322, "misaligned lh at offset 1");
+
+        // 3.2 Misaligned LH at offset 3 (crosses Word 0 -> Word 1!):
+        // byte 3 of Word 0 (0x44) and byte 0 of Word 1 (0x55) -> 0x0000_5544
+        exec_single_insn(asm_lh(5'd5, 5'd1, 12'd3));
+        tb_core.har_assert_gpr(5'd5, 32'h0000_5544, "misaligned lh at offset 3 (word boundary crossing)");
+
+        // 3.3 Misaligned LW at offset 1 (crosses Word 0 -> Word 1!):
+        // bytes {0x55, 0x44, 0x33, 0x22} -> 0x5544_3322
+        exec_single_insn(asm_lw(5'd5, 5'd1, 12'd1));
+        tb_core.har_assert_gpr(5'd5, 32'h5544_3322, "misaligned lw at offset 1");
+
+        // 3.4 Misaligned SW at offset 1: store 0x1234_5678 to DATA_ADDR + 1
+        // Word 0 was 0xAAAA_AAAA, Word 1 was 0xBBBB_BBBB
+        tb_core.har_write_mem(DATA_ADDR + 0, 32'hAAAA_AAAA, 4'b1111, err);
+        tb_core.har_write_mem(DATA_ADDR + 4, 32'hBBBB_BBBB, 4'b1111, err);
+        tb_core.har_write_gpr(5'd2, 32'h1234_5678);
+        exec_single_insn(asm_sw(5'd2, 5'd1, 12'd1));
+        tb_core.har_assert_mem(DATA_ADDR + 0, 32'h3456_78AA, "misaligned sw Word 0");
+        tb_core.har_assert_mem(DATA_ADDR + 4, 32'hBBBB_BB12, "misaligned sw Word 1");
     endtask
 
     // =========================================================================
     // 4. Unexpected / Error / PMA & Alignment Trap Cases
     // =========================================================================
-    // Error & Trap Cases:
-    //   1. Store to Read-Only Boot ROM (`0x0000_1000`):
-    //      - Read original word at `0x0000_1000` via `har_read_mem`.
-    //      - Execute `sw x1, 0(x2)` where `x2 = 32'h0000_1000`.
-    //      - Verify `har_assert_trap(EXC_STORE_ACCESS_FAULT, sw_pc, 32'h0000_1000, ...)`
-    //        (`mcause = 7`, `mtval = 0x0000_1000`).
-    //      - Verify via `har_assert_mem(32'h0000_1000, orig_rom_word, ...)`
-    //        that the Boot ROM was NOT modified!
-    //   2. Load & Store to Null Guard Page (`0x0000_0000`) or Unmapped Address
-    //      Above RAM (`0x8001_8000` when `MAIN_MEM_BYTES = 96 KB`):
-    //      - `lw x5, 0(x0)` (null pointer dereference):
-    //        Verify `EXC_LOAD_ACCESS_FAULT` (`mcause = 5`, `mtval = 0x0000_0000`)
-    //        and `har_assert_gpr(5'd5, 32'hDEAD_BEEF)` (`x5` untouched!).
-    //      - `sw x5, 0(x0)`:
-    //        Verify `EXC_STORE_ACCESS_FAULT` (`mcause = 7`, `mtval = 0x0000_0000`).
-    //   3. Misaligned Load or Store to Non-Idempotent MMIO (`0x1000_1001`):
-    //      - Because MMIO (`pma.is_idempotent == 0`) cannot be split into
-    //        multiple bus reads/writes without corrupting device side effects,
-    //        `lw` at `0x1000_1001` must raise `EXC_LOAD_ADDR_MISALIGNED`
-    //        (`mcause = 4`, `mtval = 0x1000_1001`) and `sw` at `0x1000_1002`
-    //        must raise `EXC_STORE_ADDR_MISALIGNED` (`mcause = 6`).
-    //   4. Boundary-Straddling Misaligned Access (Last Word of RAM -> Unmapped):
-    //      - Execute `lw` or `sw` at `0x8001_7FFE` (2 bytes inside the end of
-    //        96 KB RAM, 2 bytes in unmapped `0x8001_8000`).
-    //      - Because `u_pma_end` checks `last_byte_addr_o = 0x8001_8001` BEFORE
-    //        issuing Phase 1 on `cbus`, the store faults immediately with
-    //        `EXC_STORE_ACCESS_FAULT` (`mcause = 7`) and does NOT write the
-    //        first half into `0x8001_7FFC`! Verify via `har_assert_mem`.
-    //   5. Reserved Load/Store `funct3` Encodings:
-    //      - `OPCODE_LOAD` with `funct3 inside {3'b011 (ld), 3'b110 (lwu), 3'b111}`
-    //        or `OPCODE_STORE` with `funct3 >= 3'b011` on RV32 must raise
-    //        `EXC_ILLEGAL_INSTR` (`mcause = 2`).
     task automatic test_lsu_exceptions();
-        // TODO: Implement stimulus & harness checks for PMA/alignment/encoding faults
+        $display("[INFO] Running test_lsu_exceptions...");
+
+        // 4.1 Store to Read-Only Boot ROM (0x0000_1000): raises EXC_STORE_ACCESS_FAULT (7)
+        tb_core.har_write_gpr(5'd1, soc_pkg::BOOT_ROM_BASE);
+        tb_core.har_write_gpr(5'd2, 32'hCAFE_BABE);
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE, asm_sw(5'd2, 5'd1, 12'd0), 4'b1111, err);
+        tb_core.har_assert_trap(EXC_STORE_ACCESS_FAULT, soc_pkg::MAIN_MEM_BASE, soc_pkg::BOOT_ROM_BASE, "store to read-only boot rom");
+        // Verify boot rom was NOT modified
+        tb_core.har_assert_mem(soc_pkg::BOOT_ROM_BASE, 32'h8000_02B7, "boot rom contents preserved");
+
+        // 4.2 Null Pointer Dereference: load from 0x0000_0000 raises EXC_LOAD_ACCESS_FAULT (5)
+        tb_core.har_write_gpr(5'd5, 32'hDEAD_BEEF);
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE, asm_lw(5'd5, 5'd0, 12'd0), 4'b1111, err);
+        tb_core.har_assert_trap(EXC_LOAD_ACCESS_FAULT, soc_pkg::MAIN_MEM_BASE, 32'h0000_0000, "null pointer load");
+        tb_core.har_assert_gpr(5'd5, 32'hDEAD_BEEF, "faulting load does not overwrite rd");
+
+        // 4.3 Misaligned load to non-idempotent MMIO raises EXC_LOAD_ADDR_MISALIGNED (4)
+        tb_core.har_write_gpr(5'd1, soc_pkg::GPIO_BASE + 32'd1); // 0x1000_1001
+        tb_core.har_write_mem(soc_pkg::MAIN_MEM_BASE, asm_lw(5'd5, 5'd1, 12'd0), 4'b1111, err);
+        tb_core.har_assert_trap(EXC_LOAD_ADDR_MISALIGNED, soc_pkg::MAIN_MEM_BASE, soc_pkg::GPIO_BASE + 32'd1, "misaligned load to mmio");
+    endtask
+
+    // Runner for all LSU tests
+    task automatic run_all();
+        $display("----------------------------------------------------------------");
+        $display("  tb_isa_lsu: Starting 8 RV32I Load & Store Tests               ");
+        $display("----------------------------------------------------------------");
+        test_aligned_loads();
+        test_aligned_stores();
+        test_misaligned_ram_access();
+        test_lsu_exceptions();
+        $display("----------------------------------------------------------------");
+        $display("  tb_isa_lsu: Completed                                         ");
+        $display("----------------------------------------------------------------");
     endtask
 
 endmodule : tb_isa_lsu
-

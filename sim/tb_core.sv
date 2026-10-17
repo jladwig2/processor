@@ -51,15 +51,12 @@
 //       * `soc_xbar #(.HAS_DEBUG(1'b1))`     (`u_soc_xbar`)
 //       * `boot_rom`                         (`u_boot_rom`)
 //       * `axi_bram_mem`                     (`u_main_mem`)
-//
-// What Needs to Be Implemented:
-//   1. Complete the bodies of the harness inspection tasks (`har_read_gpr`,
-//      `har_write_gpr`, `har_assert_gpr`, `har_read_csr`, `har_write_csr`,
-//      `har_assert_csr`, `har_read_mem`, `har_write_mem`, `har_assert_mem`,
-//      `har_wait_retire`, `har_assert_trap`).
-//   2. Implement the top-level test runner that executes directed instruction
-//      tests (`sim/unit/tb_isa_*.sv`) or loads `riscv-tests` ELF/hex images via
-//      `+mem_hex=<path>` and monitors `tohost` (`0x8000_1000`).
+//   - Unit Test Suites Instantiated:
+//       * `tb_isa_alu`                       (`u_test_alu`)
+//       * `tb_isa_bru`                       (`u_test_bru`)
+//       * `tb_isa_muldiv`                    (`u_test_muldiv`)
+//       * `tb_isa_lsu`                       (`u_test_lsu`)
+//       * `tb_isa_system`                    (`u_test_system`)
 // =============================================================================
 
 module tb_core
@@ -265,7 +262,7 @@ module tb_core
     assign mmio_rsp       = '0;
 
     // -------------------------------------------------------------------------
-    // 4. Verification Harness Inspection Task Stubs (Using HAS_DEBUG Ports)
+    // 4. Verification Harness Inspection Tasks (Using HAS_DEBUG Ports)
     // -------------------------------------------------------------------------
     int unsigned test_errors = 0;
 
@@ -274,9 +271,15 @@ module tb_core
         input  logic [4:0]  reg_idx,
         output logic [31:0] rdata
     );
-        // TODO: Drive `har_reg_req` (`valid=1, write=0, is_csr=0, addr={7'b0, reg_idx}`),
-        // wait for `har_reg_rsp.ready`, and capture `rdata = har_reg_rsp.rdata`.
-        rdata = 32'h0;
+        @(posedge clk);
+        har_reg_req.valid <= 1'b1;
+        har_reg_req.write <= 1'b0;
+        har_reg_req.is_csr <= 1'b0;
+        har_reg_req.addr <= {7'b0, reg_idx};
+        har_reg_req.wdata <= '0;
+        do @(posedge clk); while (!har_reg_rsp.ready);
+        rdata = har_reg_rsp.rdata;
+        har_reg_req.valid <= 1'b0;
     endtask
 
     // Write/Preload a 32-bit GPR (`x1..x31`) via the Debug Register Inspection port
@@ -284,8 +287,14 @@ module tb_core
         input logic [4:0]  reg_idx,
         input logic [31:0] wdata
     );
-        // TODO: Drive `har_reg_req` (`valid=1, write=1, is_csr=0, addr={7'b0, reg_idx}, wdata=wdata`),
-        // wait for `har_reg_rsp.ready`, and deassert `har_reg_req.valid`.
+        @(posedge clk);
+        har_reg_req.valid <= 1'b1;
+        har_reg_req.write <= 1'b1;
+        har_reg_req.is_csr <= 1'b0;
+        har_reg_req.addr <= {7'b0, reg_idx};
+        har_reg_req.wdata <= wdata;
+        do @(posedge clk); while (!har_reg_rsp.ready);
+        har_reg_req.valid <= 1'b0;
     endtask
 
     // Assert that GPR `reg_idx` holds `expected_val`
@@ -294,8 +303,14 @@ module tb_core
         input logic [31:0] expected_val,
         input string       desc
     );
-        // TODO: Call `har_read_gpr(reg_idx, actual_val)` and compare against
-        // `expected_val`, incrementing `test_errors` on mismatch.
+        logic [31:0] actual_val;
+        har_read_gpr(reg_idx, actual_val);
+        if (actual_val === expected_val) begin
+            $display("[PASS] %s: GPR x%0d = 0x%08h", desc, reg_idx, actual_val);
+        end else begin
+            $display("[FAIL] %s: GPR x%0d = 0x%08h, expected 0x%08h", desc, reg_idx, actual_val, expected_val);
+            test_errors++;
+        end
     endtask
 
     // Read a 32-bit CSR via the Debug Register Inspection port
@@ -304,10 +319,33 @@ module tb_core
         output logic [31:0] rdata,
         output logic        err
     );
-        // TODO: Drive `har_reg_req` (`valid=1, write=0, is_csr=1, addr=csr_addr`),
-        // wait for `har_reg_rsp.ready`, and capture `rdata` and `err`.
-        rdata = 32'h0;
-        err   = 1'b0;
+        @(posedge clk);
+        har_reg_req.valid <= 1'b1;
+        har_reg_req.write <= 1'b0;
+        har_reg_req.is_csr <= 1'b1;
+        har_reg_req.addr <= csr_addr;
+        har_reg_req.wdata <= '0;
+        do @(posedge clk); while (!har_reg_rsp.ready);
+        rdata = har_reg_rsp.rdata;
+        err   = har_reg_rsp.err;
+        har_reg_req.valid <= 1'b0;
+    endtask
+
+    // Write/Preload a 32-bit CSR via the Debug Register Inspection port
+    task automatic har_write_csr(
+        input  logic [11:0] csr_addr,
+        input  logic [31:0] wdata,
+        output logic        err
+    );
+        @(posedge clk);
+        har_reg_req.valid <= 1'b1;
+        har_reg_req.write <= 1'b1;
+        har_reg_req.is_csr <= 1'b1;
+        har_reg_req.addr <= csr_addr;
+        har_reg_req.wdata <= wdata;
+        do @(posedge clk); while (!har_reg_rsp.ready);
+        err = har_reg_rsp.err;
+        har_reg_req.valid <= 1'b0;
     endtask
 
     // Assert that CSR `csr_addr` holds `expected_val`
@@ -316,8 +354,15 @@ module tb_core
         input logic [31:0] expected_val,
         input string       desc
     );
-        // TODO: Call `har_read_csr(csr_addr, actual_val, err)` and verify
-        // `!err && (actual_val === expected_val)`.
+        logic [31:0] actual_val;
+        logic err;
+        har_read_csr(csr_addr, actual_val, err);
+        if (!err && (actual_val === expected_val)) begin
+            $display("[PASS] %s: CSR 0x%03h = 0x%08h", desc, csr_addr, actual_val);
+        end else begin
+            $display("[FAIL] %s: CSR 0x%03h = 0x%08h (err=%b), expected 0x%08h", desc, csr_addr, actual_val, err, expected_val);
+            test_errors++;
+        end
     endtask
 
     // Read a 32-bit word from physical memory via the Debug SBA port
@@ -326,10 +371,16 @@ module tb_core
         output logic [31:0] rdata,
         output logic        err
     );
-        // TODO: Drive `har_mem_req_*` (`valid=1, write=0, addr=addr`), wait for
-        // `har_mem_rsp_valid`, and capture `rdata` and `err`.
-        rdata = 32'h0;
-        err   = 1'b0;
+        @(posedge clk);
+        har_mem_req_valid <= 1'b1;
+        har_mem_req_write <= 1'b0;
+        har_mem_req_addr  <= addr;
+        har_mem_req_wdata <= '0;
+        har_mem_req_wstrb <= 4'b1111;
+        do @(posedge clk); while (!har_mem_rsp_valid);
+        rdata = har_mem_rsp_rdata;
+        err   = har_mem_rsp_err;
+        har_mem_req_valid <= 1'b0;
     endtask
 
     // Write a 32-bit word (or byte-masked lanes) to physical memory via Debug SBA
@@ -339,9 +390,15 @@ module tb_core
         input  logic [3:0]  wstrb,
         output logic        err
     );
-        // TODO: Drive `har_mem_req_*` (`valid=1, write=1, addr=addr, wdata=wdata, wstrb=wstrb`),
-        // wait for `har_mem_rsp_valid`, and capture `err`.
-        err = 1'b0;
+        @(posedge clk);
+        har_mem_req_valid <= 1'b1;
+        har_mem_req_write <= 1'b1;
+        har_mem_req_addr  <= addr;
+        har_mem_req_wdata <= wdata;
+        har_mem_req_wstrb <= wstrb;
+        do @(posedge clk); while (!har_mem_rsp_valid);
+        err = har_mem_rsp_err;
+        har_mem_req_valid <= 1'b0;
     endtask
 
     // Assert that physical memory at `addr` holds `expected_val`
@@ -350,8 +407,15 @@ module tb_core
         input logic [31:0] expected_val,
         input string       desc
     );
-        // TODO: Call `har_read_mem(addr, actual_val, err)` and verify
-        // `!err && (actual_val === expected_val)`.
+        logic [31:0] actual_val;
+        logic err;
+        har_read_mem(addr, actual_val, err);
+        if (!err && (actual_val === expected_val)) begin
+            $display("[PASS] %s: Mem[0x%08h] = 0x%08h", desc, addr, actual_val);
+        end else begin
+            $display("[FAIL] %s: Mem[0x%08h] = 0x%08h (err=%b), expected 0x%08h", desc, addr, actual_val, err, expected_val);
+            test_errors++;
+        end
     endtask
 
     // Wait for the next instruction retirement or trap on `commit_trace_o`
@@ -359,9 +423,18 @@ module tb_core
         input  int unsigned   timeout_cycles,
         output commit_trace_t trace_out
     );
-        // TODO: Step clock cycles up to `timeout_cycles` until
-        // `commit_trace.valid == 1'b1` and return `commit_trace`.
+        int unsigned cnt = 0;
         trace_out = '0;
+        while (cnt < timeout_cycles) begin
+            @(posedge clk);
+            cnt++;
+            if (commit_trace.valid) begin
+                trace_out = commit_trace;
+                return;
+            end
+        end
+        $display("[TIMEOUT] har_wait_retire timed out after %0d cycles", timeout_cycles);
+        test_errors++;
     endtask
 
     // Verify that a precise trap occurred with expected `mcause`, `mepc`, and `mtval`
@@ -371,8 +444,86 @@ module tb_core
         input logic [31:0] expected_tval,
         input string       desc
     );
-        // TODO: Verify `commit_trace.trap_taken == 1'b1`, `commit_trace.trap_cause == expected_cause`,
-        // and inspect `CSR_MCAUSE`, `CSR_MEPC`, and `CSR_MTVAL` via `har_assert_csr`.
+        commit_trace_t tr;
+        har_wait_retire(100, tr);
+        if (tr.trap_taken && (tr.trap_cause == expected_cause)) begin
+            $display("[PASS] %s: Trap taken cause=%0d, epc=0x%08h", desc, tr.trap_cause, tr.pc);
+        end else begin
+            $display("[FAIL] %s: Expected trap cause=%0d, got trap_taken=%b cause=%0d epc=0x%08h",
+                     desc, expected_cause, tr.trap_taken, tr.trap_cause, tr.pc);
+            test_errors++;
+        end
+        har_assert_csr(CSR_MEPC, expected_epc, $sformatf("%s (MEPC check)", desc));
+        har_assert_csr(CSR_MTVAL, expected_tval, $sformatf("%s (MTVAL check)", desc));
     endtask
+
+    // -------------------------------------------------------------------------
+    // 5. Unit Test Suite Instantiations
+    // -------------------------------------------------------------------------
+    tb_isa_alu    u_test_alu();
+    tb_isa_bru    u_test_bru();
+    tb_isa_muldiv u_test_muldiv();
+    tb_isa_lsu    u_test_lsu();
+    tb_isa_system u_test_system();
+
+    // -------------------------------------------------------------------------
+    // 6. Main Test Runner
+    // -------------------------------------------------------------------------
+    initial begin
+        rst_n             = 1'b0;
+        meip              = 1'b0;
+        mtip              = 1'b0;
+        msip              = 1'b0;
+        har_reg_req       = '0;
+        har_mem_req_valid = 1'b0;
+        har_mem_req_write = 1'b0;
+        har_mem_req_addr  = '0;
+        har_mem_req_wdata = '0;
+        har_mem_req_wstrb = 4'b1111;
+
+        $display("================================================================");
+        $display("  processor-complex: M1 Core Verification Harness (tb_core)     ");
+        $display("================================================================");
+
+        // Reset sequence
+        repeat (10) @(posedge clk);
+        rst_n = 1'b1;
+        repeat (10) @(posedge clk);
+
+        // Run directed unit tests if selected or by default
+        if ($test$plusargs("test_alu") || $test$plusargs("test_all")) begin
+            u_test_alu.run_all();
+        end
+        if ($test$plusargs("test_bru") || $test$plusargs("test_all")) begin
+            u_test_bru.run_all();
+        end
+        if ($test$plusargs("test_muldiv") || $test$plusargs("test_all")) begin
+            u_test_muldiv.run_all();
+        end
+        if ($test$plusargs("test_lsu") || $test$plusargs("test_all")) begin
+            u_test_lsu.run_all();
+        end
+        if ($test$plusargs("test_system") || $test$plusargs("test_all")) begin
+            u_test_system.run_all();
+        end
+
+        // Final summary
+        repeat (20) @(posedge clk);
+        $display("----------------------------------------------------------------");
+        if (test_errors == 0) begin
+            $display("[SUCCESS] All executed verification tests PASSED with 0 errors!");
+        end else begin
+            $display("[FAILURE] %0d error(s) detected during verification run!", test_errors);
+        end
+        $display("================================================================");
+        $finish(test_errors == 0 ? 0 : 1);
+    end
+
+    // Simulation watchdog (100 us timeout)
+    initial begin
+        #100_000;
+        $display("[ERROR] tb_core timed out after 100 us!");
+        $finish(2);
+    end
 
 endmodule : tb_core

@@ -30,11 +30,6 @@
 //       * `flush_i` <- `bru_redirect_valid || trap_redirect_valid`
 //   - Child Module:
 //       * `decoder_rv32 #(.HAS_MULDIV(HAS_MULDIV))` (`u_decoder_rv32`)
-//
-// What Needs to Be Implemented:
-//   1. Instantiate `decoder_rv32` (`u_decoder_rv32`).
-//   2. Implement the standardized physical pipeline stage (`dec_valid_q`,
-//      `dec_uop_q`, `fetch_ready_o`, `step_en`).
 // =============================================================================
 
 module decode
@@ -61,16 +56,46 @@ module decode
 );
 
     // -------------------------------------------------------------------------
-    // TODO:
-    //   1. Instantiate `decoder_rv32` (`u_decoder_rv32`).
-    //   2. Implement the D -> I physical pipeline register (`dec_valid_q`,
-    //      `dec_uop_q`) using the standard valid/ready/flush pattern.
+    // 1. Combinational Decoder Instance
     // -------------------------------------------------------------------------
+    uop_t dec_uop_d;
 
-    // Temporary stub tie-offs
-    assign fetch_ready_o = 1'b0;
-    assign dec_valid_o   = 1'b0;
-    assign dec_uop_o     = '0;
+    decoder_rv32 #(
+        .HAS_MULDIV (HAS_MULDIV)
+    ) u_decoder_rv32 (
+        .pkt_i (fetch_pkt_i),
+        .uop_o (dec_uop_d)
+    );
+
+    // -------------------------------------------------------------------------
+    // 2. Stage D -> Stage I Pipeline Registers & Handshake Logic
+    // -------------------------------------------------------------------------
+    logic dec_valid_q;
+    uop_t dec_uop_q;
+
+    wire step_en = fetch_valid_i && fetch_ready_o;
+
+    assign fetch_ready_o = !dec_valid_q || issue_ready_i;
+    assign dec_valid_o   = dec_valid_q;
+    assign dec_uop_o     = dec_uop_q;
+
+    always_ff @(posedge clk_i or negedge rst_n_i) begin
+        if (!rst_n_i) begin
+            dec_valid_q <= 1'b0;
+        end else if (flush_i) begin
+            dec_valid_q <= 1'b0;
+        end else if (step_en) begin
+            dec_valid_q <= 1'b1;
+        end else if (issue_ready_i) begin
+            dec_valid_q <= 1'b0;
+        end
+    end
+
+    // Clock-enabled pipeline register for micro-op payload
+    always_ff @(posedge clk_i) begin
+        if (step_en && !flush_i) begin
+            dec_uop_q <= dec_uop_d;
+        end
+    end
 
 endmodule : decode
-

@@ -43,10 +43,6 @@
 //       * `wb_fwd_valid_i`, `wb_fwd_rd_i`, `wb_fwd_data_i` <- `core.sv` (Stage C register)
 //   - Outputs:
 //       * `rs1_val_o`, `rs2_val_o`               -> `dispatch.sv` (latched into I -> X stage)
-//
-// What Needs to Be Implemented:
-//   1. Implement the priority multiplexers for `rs1_val_o` and `rs2_val_o`
-//      following the 4-level priority hierarchy above.
 // =============================================================================
 
 module bypass
@@ -79,14 +75,33 @@ module bypass
 );
 
     // -------------------------------------------------------------------------
-    // TODO:
-    //   Implement combinational forwarding priority multiplexers for
-    //   `rs1_val_o` and `rs2_val_o` (`x0` > `ex_fwd` > `wb_fwd` > `prf`).
+    // Operand 1 (rs1) Forwarding Multiplexer
     // -------------------------------------------------------------------------
+    always_comb begin
+        if (rs1_addr_i == '0) begin
+            rs1_val_o = 32'h0000_0000;
+        end else if (ex_fwd_valid_i && (ex_fwd_rd_i == rs1_addr_i)) begin
+            rs1_val_o = ex_fwd_data_i;
+        end else if (wb_fwd_valid_i && (wb_fwd_rd_i == rs1_addr_i)) begin
+            rs1_val_o = wb_fwd_data_i;
+        end else begin
+            rs1_val_o = prf_rs1_data_i;
+        end
+    end
 
-    // Temporary stub tie-offs
-    assign rs1_val_o = 32'h0;
-    assign rs2_val_o = 32'h0;
+    // -------------------------------------------------------------------------
+    // Operand 2 (rs2) Forwarding Multiplexer
+    // -------------------------------------------------------------------------
+    always_comb begin
+        if (rs2_addr_i == '0) begin
+            rs2_val_o = 32'h0000_0000;
+        end else if (ex_fwd_valid_i && (ex_fwd_rd_i == rs2_addr_i)) begin
+            rs2_val_o = ex_fwd_data_i;
+        end else if (wb_fwd_valid_i && (wb_fwd_rd_i == rs2_addr_i)) begin
+            rs2_val_o = wb_fwd_data_i;
+        end else begin
+            rs2_val_o = prf_rs2_data_i;
+        end
+    end
 
 endmodule : bypass
-

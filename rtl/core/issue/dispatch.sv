@@ -48,14 +48,6 @@
 //       * `flush_i` <- `bru_redirect_valid || trap_redirect_valid`
 //   - Child Module:
 //       * `bypass.sv` (`u_bypass`)
-//
-// What Needs to Be Implemented:
-//   1. Instantiate `bypass` (`u_bypass`) to resolve `rs1_val_d` and `rs2_val_d`.
-//   2. Compute `hazard_stall` (when an older instruction in Stage X writes a
-//      register read by `dec_uop_i` and `!ex_fwd_valid_i`, or when a
-//      serializing instruction is in flight).
-//   3. Implement the standardized Stage I -> Stage X physical pipeline register
-//      (`issue_valid_q`, `issue_uop_q`, `issue_rs1_val_q`, `issue_rs2_val_q`).
 // =============================================================================
 
 module dispatch
@@ -100,21 +92,97 @@ module dispatch
 );
 
     // -------------------------------------------------------------------------
-    // TODO:
-    //   1. Instantiate `bypass` (`u_bypass`).
-    //   2. Implement RAW hazard and serialization interlock (`hazard_stall`).
-    //   3. Implement Stage I -> Stage X physical pipeline register (`issue_valid_q`,
-    //      `issue_uop_q`, `issue_rs1_val_q`, `issue_rs2_val_q`).
+    // 1. Physical Register File Address Read Drive
     // -------------------------------------------------------------------------
+    assign prf_rs1_addr_o = dec_uop_i.prs1;
+    assign prf_rs2_addr_o = dec_uop_i.prs2;
 
-    // Temporary stub tie-offs
-    assign dec_ready_o     = 1'b0;
-    assign prf_rs1_addr_o  = '0;
-    assign prf_rs2_addr_o  = '0;
-    assign issue_valid_o   = 1'b0;
-    assign issue_uop_o     = '0;
-    assign issue_rs1_val_o = 32'h0;
-    assign issue_rs2_val_o = 32'h0;
+    // -------------------------------------------------------------------------
+    // 2. Operand Bypass / Forwarding Unit
+    // -------------------------------------------------------------------------
+    logic [31:0] rs1_val_d;
+    logic [31:0] rs2_val_d;
+
+    bypass #(
+        .ADDR_W (PRF_ADDR_W)
+    ) u_bypass (
+        .rs1_addr_i     (dec_uop_i.prs1),
+        .rs2_addr_i     (dec_uop_i.prs2),
+        .prf_rs1_data_i (prf_rs1_data_i),
+        .prf_rs2_data_i (prf_rs2_data_i),
+        .ex_fwd_valid_i (ex_fwd_valid_i),
+        .ex_fwd_rd_i    (ex_fwd_rd_i),
+        .ex_fwd_data_i  (ex_fwd_data_i),
+        .wb_fwd_valid_i (wb_fwd_valid_i),
+        .wb_fwd_rd_i    (wb_fwd_rd_i),
+        .wb_fwd_data_i  (wb_fwd_data_i),
+        .rs1_val_o      (rs1_val_d),
+        .rs2_val_o      (rs2_val_d)
+    );
+
+    // -------------------------------------------------------------------------
+    // 3. Stage I Physical Pipeline Registers
+    // -------------------------------------------------------------------------
+    logic        issue_valid_q;
+    uop_t        issue_uop_q;
+    logic [31:0] issue_rs1_val_q;
+    logic [31:0] issue_rs2_val_q;
+
+    // -------------------------------------------------------------------------
+    // 4. Hazard Detection & Serialization Interlocks
+    // -------------------------------------------------------------------------
+    // RAW Hazard: Stage X contains an active uop that writes a register needed by
+    // the incoming uop in Decode, but the result is not yet available for forwarding
+    // (e.g. multi-cycle division/multiplication or pending memory load).
+    wire raw_hazard = issue_valid_q && issue_uop_q.rd_wen && (issue_uop_q.prd != '0) && !ex_fwd_valid_i && (
+        (dec_uop_i.rs1_ren && (dec_uop_i.prs1 == issue_uop_q.prd)) ||
+        (dec_uop_i.rs2_ren && (dec_uop_i.prs2 == issue_uop_q.prd))
+    );
+
+    // Serialization Hazard:
+    //   - Incoming uop is serializing (or has an exception): must wait until older
+    //     instructions in Stage X and Stage C have committed.
+    //   - Older uop currently in Stage X or Stage C is serializing: younger
+    //     instructions in Decode must wait until it retires.
+    wire dec_is_serializing = dec_valid_i && (dec_uop_i.is_serializing || dec_uop_i.exc_valid);
+    wire ex_is_serializing  = issue_valid_q && (issue_uop_q.is_serializing || issue_uop_q.exc_valid);
+    wire wb_is_serializing  = wb_valid_i && wb_serializing_i;
+
+    wire serializing_hazard = (dec_is_serializing && (issue_valid_q || wb_valid_i)) ||
+                              ex_is_serializing ||
+                              wb_is_serializing;
+
+    wire hazard_stall = dec_valid_i && (raw_hazard || serializing_hazard);
+
+    // -------------------------------------------------------------------------
+    // 5. Stage I Handshake & Output Wiring
+    // -------------------------------------------------------------------------
+    wire step_en = dec_valid_i && dec_ready_o;
+
+    assign dec_ready_o     = (!issue_valid_q || ex_ready_i) && !hazard_stall;
+    assign issue_valid_o   = issue_valid_q;
+    assign issue_uop_o     = issue_uop_q;
+    assign issue_rs1_val_o = issue_rs1_val_q;
+    assign issue_rs2_val_o = issue_rs2_val_q;
+
+    always_ff @(posedge clk_i or negedge rst_n_i) begin
+        if (!rst_n_i) begin
+            issue_valid_q <= 1'b0;
+        end else if (flush_i) begin
+            issue_valid_q <= 1'b0;
+        end else if (step_en) begin
+            issue_valid_q <= 1'b1;
+        end else if (ex_ready_i) begin
+            issue_valid_q <= 1'b0;
+        end
+    end
+
+    always_ff @(posedge clk_i) begin
+        if (step_en && !flush_i) begin
+            issue_uop_q     <= dec_uop_i;
+            issue_rs1_val_q <= rs1_val_d;
+            issue_rs2_val_q <= rs2_val_d;
+        end
+    end
 
 endmodule : dispatch
-

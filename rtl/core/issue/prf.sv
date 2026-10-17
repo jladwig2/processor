@@ -45,15 +45,6 @@
 //       * `rd_wen_i`, `rd_addr_i`, `rd_wdata_i`
 //   - Optional Debug Inspection Port (connected to `debug_ctrl.sv`, gated by `HAS_DEBUG`):
 //       * `dbg_addr_i`, `dbg_rdata_o`, `dbg_wen_i`, `dbg_wdata_i`
-//
-// What Needs to Be Implemented:
-//   1. Declare register array `logic [31:0] regs_q [1:NUM_REGS-1]` (reset to
-//      `'0` on `!rst_n_i` for clean deterministic simulation/co-sim startup).
-//   2. Implement synchronous write on `posedge clk_i` when `rd_wen_i &&
-//      (rd_addr_i != '0)` (or `dbg_wen_i` when `HAS_DEBUG` is enabled).
-//   3. Implement combinational read ports `rs1_data_o` and `rs2_data_o` with
-//      `x0 == 0` hardwiring and internal write-through forwarding, plus
-//      `generate if (HAS_DEBUG)` for `dbg_rdata_o`.
 // =============================================================================
 
 module prf
@@ -88,15 +79,68 @@ module prf
 );
 
     // -------------------------------------------------------------------------
-    // TODO:
-    //   Implement `regs_q[1:NUM_REGS-1]` array, synchronous write port,
-    //   combinational read ports with `x0` hardwired to 0 and write-through
-    //   bypass, and `generate if (HAS_DEBUG)` inspection port.
+    // 1. Register Storage Array (x1 .. x[NUM_REGS-1])
     // -------------------------------------------------------------------------
+    // Note: Register 0 is omitted from storage and hardwired to zero.
+    logic [31:0] regs_q [1:NUM_REGS-1];
 
-    // Temporary stub tie-offs
-    assign rs1_data_o  = 32'h0;
-    assign rs2_data_o  = 32'h0;
-    assign dbg_rdata_o = 32'h0;
+    always_ff @(posedge clk_i or negedge rst_n_i) begin
+        if (!rst_n_i) begin
+            for (int unsigned i = 1; i < NUM_REGS; i++) begin
+                regs_q[i] <= 32'h0000_0000;
+            end
+        end else begin
+            // Architectural commit writeback
+            if (rd_wen_i && (rd_addr_i != '0)) begin
+                regs_q[rd_addr_i] <= rd_wdata_i;
+            end else if (HAS_DEBUG && dbg_wen_i && (dbg_addr_i != '0)) begin
+                regs_q[dbg_addr_i] <= dbg_wdata_i;
+            end
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 2. Combinational Read Ports with Write-Through Forwarding
+    // -------------------------------------------------------------------------
+    // Read Port 1 (rs1)
+    always_comb begin
+        if (rs1_addr_i == '0) begin
+            rs1_data_o = 32'h0000_0000;
+        end else if (rd_wen_i && (rd_addr_i == rs1_addr_i)) begin
+            rs1_data_o = rd_wdata_i;
+        end else begin
+            rs1_data_o = regs_q[rs1_addr_i];
+        end
+    end
+
+    // Read Port 2 (rs2)
+    always_comb begin
+        if (rs2_addr_i == '0) begin
+            rs2_data_o = 32'h0000_0000;
+        end else if (rd_wen_i && (rd_addr_i == rs2_addr_i)) begin
+            rs2_data_o = rd_wdata_i;
+        end else begin
+            rs2_data_o = regs_q[rs2_addr_i];
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // 3. Optional Debug / Harness Inspection Port (HAS_DEBUG)
+    // -------------------------------------------------------------------------
+    generate
+        if (HAS_DEBUG) begin : gen_debug_port
+            always_comb begin
+                if (dbg_addr_i == '0) begin
+                    dbg_rdata_o = 32'h0000_0000;
+                end else if (rd_wen_i && (rd_addr_i == dbg_addr_i)) begin
+                    dbg_rdata_o = rd_wdata_i;
+                end else begin
+                    dbg_rdata_o = regs_q[dbg_addr_i];
+                end
+            end
+        end else begin : gen_no_debug_port
+            assign dbg_rdata_o = 32'h0000_0000;
+        end
+    endgenerate
 
 endmodule : prf
