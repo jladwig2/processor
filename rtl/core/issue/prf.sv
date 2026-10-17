@@ -27,30 +27,42 @@
 //          (`rd_wen_i && rd_addr_i == k`), the read port combinationally
 //          returns `rd_wdata_i` so instructions reading a register in the exact
 //          cycle it retires always observe the newly committed value.
+//     3. Optional Debug & Verification Inspection Port (`HAS_DEBUG`):
+//        - Gated behind `generate if (HAS_DEBUG)` so zero extra LUTs or muxes
+//          are synthesized when `HAS_DEBUG == 1'b0`.
+//        - When `HAS_DEBUG == 1'b1`, provides an independent read/write port
+//          (`dbg_addr_i`, `dbg_rdata_o`, `dbg_wen_i`, `dbg_wdata_i`) driven by
+//          `debug_ctrl.sv` (and used by the simulation test harness in
+//          `tb_core.sv` / `sim/unit/tb_isa_*.sv` to verify GPR state after any
+//          instruction retires or traps).
 //
 // Connections:
 //   - Instantiated by: `core.sv` (`u_prf`).
-//   - Read Ports (connected to `dispatch.sv` / `bypass.sv`):
+//   - Pipeline Read Ports (connected to `dispatch.sv` / `bypass.sv`):
 //       * `rs1_addr_i` -> `rs1_data_o`
 //       * `rs2_addr_i` -> `rs2_data_o`
-//   - Write Port (connected to `commit.sv`):
+//   - Pipeline Write Port (connected to `commit.sv`):
 //       * `rd_wen_i`, `rd_addr_i`, `rd_wdata_i`
+//   - Optional Debug Inspection Port (connected to `debug_ctrl.sv`, gated by `HAS_DEBUG`):
+//       * `dbg_addr_i`, `dbg_rdata_o`, `dbg_wen_i`, `dbg_wdata_i`
 //
 // What Needs to Be Implemented:
-//   1. Declare register array `logic [31:0] regs_q [1:N_PHYS_REGS-1]` (reset to
+//   1. Declare register array `logic [31:0] regs_q [1:NUM_REGS-1]` (reset to
 //      `'0` on `!rst_n_i` for clean deterministic simulation/co-sim startup).
 //   2. Implement synchronous write on `posedge clk_i` when `rd_wen_i &&
-//      (rd_addr_i != '0)`.
+//      (rd_addr_i != '0)` (or `dbg_wen_i` when `HAS_DEBUG` is enabled).
 //   3. Implement combinational read ports `rs1_data_o` and `rs2_data_o` with
-//      `x0 == 0` hardwiring and internal write-through forwarding.
+//      `x0 == 0` hardwiring and internal write-through forwarding, plus
+//      `generate if (HAS_DEBUG)` for `dbg_rdata_o`.
 // =============================================================================
 
 module prf
     import rv_pkg::*;
     import core_pkg::*;
 #(
-    parameter int unsigned NUM_REGS = core_pkg::N_PHYS_REGS,
-    parameter int unsigned ADDR_W   = $clog2(NUM_REGS)
+    parameter int unsigned NUM_REGS  = core_pkg::N_PHYS_REGS,
+    parameter int unsigned ADDR_W    = $clog2(NUM_REGS),
+    parameter bit          HAS_DEBUG = 1'b1
 ) (
     input  logic              clk_i,
     input  logic              rst_n_i,
@@ -66,19 +78,25 @@ module prf
     // Synchronous Writeback Port (rd from Commit stage)
     input  logic              rd_wen_i,
     input  logic [ADDR_W-1:0] rd_addr_i,
-    input  logic [31:0]       rd_wdata_i
+    input  logic [31:0]       rd_wdata_i,
+
+    // Optional Debug / Verification Harness Inspection Port (gated by HAS_DEBUG)
+    input  logic [ADDR_W-1:0] dbg_addr_i,
+    output logic [31:0]       dbg_rdata_o,
+    input  logic              dbg_wen_i,
+    input  logic [31:0]       dbg_wdata_i
 );
 
     // -------------------------------------------------------------------------
     // TODO:
-    //   Implement `regs_q[1:NUM_REGS-1]` array, synchronous write port, and
+    //   Implement `regs_q[1:NUM_REGS-1]` array, synchronous write port,
     //   combinational read ports with `x0` hardwired to 0 and write-through
-    //   bypass.
+    //   bypass, and `generate if (HAS_DEBUG)` inspection port.
     // -------------------------------------------------------------------------
 
     // Temporary stub tie-offs
-    assign rs1_data_o = 32'h0;
-    assign rs2_data_o = 32'h0;
+    assign rs1_data_o  = 32'h0;
+    assign rs2_data_o  = 32'h0;
+    assign dbg_rdata_o = 32'h0;
 
 endmodule : prf
-

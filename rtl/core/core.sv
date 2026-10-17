@@ -46,6 +46,11 @@
 //     6. Core Bus Interface (`core_cbus_arb.sv`):
 //        - Arbitrates `frontend.sv` (`imem_*`) and `lsu.sv` (`dmem_*`) onto the
 //          core's unified external `cbus` master port (`cbus_req_o` / `cbus_rsp_i`).
+//     7. Optional Debug & Verification Inspection (`debug_ctrl.sv`, gated by `HAS_DEBUG`):
+//        - Instantiated inside `generate if (HAS_DEBUG)`. Connects
+//          `dbg_reg_req_i` / `dbg_reg_rsp_o` to `prf.sv` and `csr_unit.sv` so
+//          the verification harness (or `debug_module.sv` over JTAG) can
+//          inspect/modify GPRs and CSRs. Stripped completely when `HAS_DEBUG == 0`.
 //
 // Connections:
 //   - Instantiated by: `soc.sv` (`gen_cores[i].u_core`) and `tb_core.sv`.
@@ -54,13 +59,14 @@
 //       * `cbus_req_valid_o`, `cbus_req_ready_i`, `cbus_req_o` -> `soc_xbar.sv`
 //       * `cbus_rsp_valid_i`, `cbus_rsp_ready_o`, `cbus_rsp_i` <- `soc_xbar.sv`
 //       * `meip_i` (from PLIC), `mtip_i` (from CLINT), `msip_i` (from CLINT)
-//       * `debug_req_i` (from Debug Module in M2/M4)
+//       * `debug_req_i`, `dbg_halted_o`, `dbg_reg_req_i`, `dbg_reg_rsp_o`
+//         (connected to `debug_module.sv` or test harness; tied off if `!HAS_DEBUG`)
 //       * `commit_trace_o` (to Verilator/Spike co-simulation harness)
 //
 // What Needs to Be Implemented:
 //   1. Instantiate all child modules (`frontend`, `decode`, `dispatch`, `prf`,
 //      `alu`, `bru`, `mul`, `div`, `lsu`, `csr_unit`, `commit`, `trap_ctrl`,
-//      `perf_counters`, and `core_cbus_arb`).
+//      `perf_counters`, `core_cbus_arb`, and `generate if (HAS_DEBUG) debug_ctrl`).
 //   2. Implement the Stage X functional unit routing, completion muxing into
 //      `ex_pkt` (`ex_wb_t`), and Stage X forwarding tap (`ex_fwd_*`).
 // =============================================================================
@@ -97,8 +103,11 @@ module core
     input  logic          mtip_i, // Machine Timer Interrupt    (from CLINT)
     input  logic          msip_i, // Machine Software Interrupt (from CLINT)
 
-    // External JTAG Debug Halt Request (from debug_module.sv in M2/M4)
+    // Optional JTAG Debug & Verification Harness Interface (gated by HAS_DEBUG)
     input  logic          debug_req_i,
+    output logic          dbg_halted_o,
+    input  dbg_reg_req_t  dbg_reg_req_i,
+    output dbg_reg_rsp_t  dbg_reg_rsp_o,
 
     // Architectural Retirement Trace Output (for Spike lockstep co-sim)
     output commit_trace_t commit_trace_o
@@ -108,7 +117,8 @@ module core
     // TODO:
     //   1. Instantiate `frontend`, `decode`, `dispatch`, `prf`, `alu`, `bru`,
     //      `mul`, `div`, `lsu`, `csr_unit`, `commit`, `trap_ctrl`,
-    //      `perf_counters`, and `core_cbus_arb`.
+    //      `perf_counters`, `core_cbus_arb`, and `generate if (HAS_DEBUG)
+    //      debug_ctrl`.
     //   2. Connect Stage X FU activation, completion multiplexer (`ex_pkt`),
     //      and pipeline flush signals (`bru_redirect_valid || trap_flush`).
     // -------------------------------------------------------------------------
@@ -117,6 +127,8 @@ module core
     assign cbus_req_valid_o = 1'b0;
     assign cbus_req_o       = '0;
     assign cbus_rsp_ready_o = 1'b1;
+    assign dbg_halted_o     = 1'b0;
+    assign dbg_reg_rsp_o    = '0;
     assign commit_trace_o   = '0;
 
 endmodule : core

@@ -257,5 +257,27 @@ package core_pkg;
         logic [3:0]              trap_cause;   // Cause code written to `mcause`
     } commit_trace_t;
 
+    // =========================================================================
+    // 5. Optional Debug & Verification Inspection Bundles (`HAS_DEBUG`)
+    // =========================================================================
+    // Used by `debug_module.sv` -> `debug_ctrl.sv` (and by the simulation test
+    // harness in `tb_core.sv` / `sim/unit/tb_isa_*.sv`) to inspect or modify
+    // architectural GPRs (`prf.sv`) and CSRs (`csr_unit.sv`). When
+    // `HAS_DEBUG == 1'b0`, all logic and ports handling these bundles are
+    // tied off and stripped from synthesis.
+    typedef struct packed {
+        logic        valid;  // 1 = Debug/harness register access request active
+        logic        write;  // 1 = Write register, 0 = Read register
+        logic        is_csr; // 1 = Target is CSR (addr[11:0]), 0 = Target is GPR (addr[4:0])
+        logic [11:0] addr;   // CSR address (12-bit) or GPR index ({7'b0, reg_idx[4:0]})
+        logic [31:0] wdata;  // 32-bit data to write when `write == 1'b1`
+    } dbg_reg_req_t;
+
+    typedef struct packed {
+        logic        ready;  // 1 = Request completed, `rdata` / `err` valid
+        logic [31:0] rdata;  // 32-bit value read from `prf.sv` or `csr_unit.sv`
+        logic        err;    // 1 = Unimplemented CSR or illegal debug access
+    } dbg_reg_rsp_t;
+
 endpackage : core_pkg
 

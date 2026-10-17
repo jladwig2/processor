@@ -53,6 +53,12 @@
 //        `CSR_RC` write if and only if `uop_i.rs1_addr != 5'd0`) sets
 //        `illegal_csr_o = 1'b1`.
 //
+//   Optional Debug & Verification Inspection Port (`HAS_DEBUG`):
+//     - Gated behind `generate if (HAS_DEBUG)`. Allows `debug_ctrl.sv` and the
+//       verification harness (`tb_core.sv` / `sim/unit/tb_isa_*.sv`) to read
+//       or write any architectural CSR (`mcause`, `mepc`, `mtval`, `mstatus`,
+//       `mtvec`, etc.) directly to verify trap causes and side effects.
+//
 // Connections:
 //   - Instantiated by: `core.sv` (`u_csr_unit`).
 //   - Stage X Query Interface:
@@ -66,20 +72,24 @@
 //   - Counter Interface (to/from `perf_counters.sv`):
 //       * `mcycle_i`, `minstret_i`, `cnt_wen_o`, `cnt_is_minstret_o`,
 //         `cnt_is_high_o`, `cnt_wdata_o`
+//   - Optional Debug Inspection Port (to/from `debug_ctrl.sv`, gated by `HAS_DEBUG`):
+//       * `dbg_csr_addr_i`, `dbg_csr_rdata_o`, `dbg_csr_wen_i`, `dbg_csr_wdata_i`,
+//         `dbg_csr_err_o`
 //
 // What Needs to Be Implemented:
 //   1. Implement the combinational CSR read & existence decoder (`rdata_o`,
 //      `illegal_csr_o`) and atomic RMW calculation (`wdata_o`, `wen_o`).
 //   2. Implement sequential CSR registers (`mstatus_q`, `mtvec_q`, `mscratch_q`,
 //      `mepc_q`, `mcause_q`, `mtval_q`, `mie_q`) updated on `commit_csr_wen_i`,
-//      `trap_enter_i`, or `mret_enter_i`.
+//      `trap_enter_i`, or `mret_enter_i` (plus `dbg_csr_*` when `HAS_DEBUG` is enabled).
 // =============================================================================
 
 module csr_unit
     import rv_pkg::*;
     import core_pkg::*;
 #(
-    parameter bit HAS_MULDIV = 1'b1
+    parameter bit HAS_MULDIV = 1'b1,
+    parameter bit HAS_DEBUG  = 1'b1
 ) (
     input  logic                  clk_i,
     input  logic                  rst_n_i,
@@ -123,7 +133,14 @@ module csr_unit
     output logic                  cnt_wen_o,
     output logic                  cnt_is_minstret_o,
     output logic                  cnt_is_high_o,
-    output logic [31:0]           cnt_wdata_o
+    output logic [31:0]           cnt_wdata_o,
+
+    // Optional Debug / Verification Harness CSR Inspection Port (gated by HAS_DEBUG)
+    input  logic [CSR_ADDR_W-1:0] dbg_csr_addr_i,
+    output logic [31:0]           dbg_csr_rdata_o,
+    input  logic                  dbg_csr_wen_i,
+    input  logic [31:0]           dbg_csr_wdata_i,
+    output logic                  dbg_csr_err_o
 );
 
     // -------------------------------------------------------------------------
@@ -132,7 +149,8 @@ module csr_unit
     //      combinational read mux (`rdata_o`) + RMW logic (`wdata_o`, `wen_o`).
     //   2. Implement M-mode CSR registers (`mstatus_q`, `mtvec_q`, `mepc_q`,
     //      `mcause_q`, `mtval_q`, `mscratch_q`, `mie_q`) with `trap_enter_i`
-    //      and `mret_enter_i` state transitions.
+    //      and `mret_enter_i` state transitions, plus `generate if (HAS_DEBUG)`
+    //      inspection port.
     // -------------------------------------------------------------------------
 
     // Temporary stub tie-offs
@@ -149,6 +167,7 @@ module csr_unit
     assign cnt_is_minstret_o = 1'b0;
     assign cnt_is_high_o     = 1'b0;
     assign cnt_wdata_o       = 32'h0;
+    assign dbg_csr_rdata_o   = 32'h0;
+    assign dbg_csr_err_o     = 1'b0;
 
 endmodule : csr_unit
-
