@@ -41,6 +41,15 @@
 //              * Slot 1 (`0x1000_1000`): `gpio`     (`rtl/periph/gpio.sv`)
 //              * Slot 2 (`0x1000_2000`): `sevenseg` (`rtl/periph/sevenseg.sv`)
 //              * Slot F (`0x1000_F000`): `sysctrl`  (`rtl/periph/sysctrl.sv`)
+//
+// What Needs to Be Implemented (M1):
+//   1. Replace `m0_switch_led_fsm` with `core` (`u_core` from `rtl/core/core.sv`),
+//      `soc_xbar` (`u_soc_xbar` from `rtl/interconnect/soc_xbar.sv`),
+//      `boot_rom` (`u_boot_rom` from `rtl/mem/boot_rom.sv`), and
+//      `axi_bram_mem` (`u_main_mem` from `rtl/mem/axi_bram_mem.sv`).
+//   2. Connect `u_soc_xbar.s_mmio_*` to `u_cbus2apb.cbus_*` so the RISC-V soft
+//      core can read/write all APB peripherals (`gpio`, `sevenseg`, `uart`,
+//      `sysctrl`) alongside `boot_rom` and `axi_bram_mem`.
 // =============================================================================
 
 module soc
